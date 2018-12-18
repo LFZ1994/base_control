@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- global parameter -->
+    <arg name="odom_topic"       default="/odom" />
+
+    <node name="base_control"   pkg="base_control"  type="base_control.py" output="screen">
+        <param name="baudrate"   value="115200"/>   
+        <param name="base_id"    value="base_footprint"/> <!-- base_link name -->
+        <param name="odom_id"    value="odom"/>      <!-- odom link name -->
+        <param name="odom_topic" value="$(arg odom_topic)"/> <!-- topic name -->
+    </node>
+</launch>
