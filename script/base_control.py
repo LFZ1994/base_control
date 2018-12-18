@@ -39,7 +39,7 @@ class BaseControl:
         self.sub = rospy.Subscriber("cmd_vel",Twist,self.cmdCB,queue_size=20)
         self.pub = rospy.Publisher(self.odom_topic,Odometry,queue_size=10)
         self.timer_odom = rospy.Timer(rospy.Duration(1/self.odom_freq),self.timerOdomCB)
-        self.timer_cmd = rospy.Timer(rospy.Duration(1),self.timerCmdCB)  #20Hz
+        # self.timer_cmd = rospy.Timer(rospy.Duration(1),self.timerCmdCB)  #20Hz
         self.tf_broadcaster = tf.TransformBroadcaster()
 
         self.current_time = rospy.Time.now()
@@ -48,15 +48,39 @@ class BaseControl:
         self.pose_y = 0.0
         self.pose_yaw = 0.0
 
-        # while True:
-        #     reading = self.serial.read(12)
-        #     if(int(reading[0].encode('hex'),16)== 0x5a & int(reading[1].encode('hex'),16)==len(reading)):
-        #         self.data = reading
-        #     else:
-        #         self.serial.read(1)
+        while True:
+            reading = self.serial.read_all()
+            if reading != '':
+                if((int(reading[0].encode('hex'),16)== 0x5a) & (int(reading[1].encode('hex'),16)==len(reading))):
+                    self.data = reading
+                else:
+                    rospy.logerr("Invalid Data")
+                    pass
+            else:
+                pass
     def cmdCB(self,data):
-        self.trans_x = data.liner.x
+        self.trans_x = data.linear.x
         self.rotat_z = data.angular.z
+        print("cmdCB")
+        print(self.trans_x,self.rotat_z)
+
+        while self.serialIDLE_flag==False:
+            # time.sleep(1)
+            rospy.loginfo("CmdCB Serial Busy")
+            time.sleep(0.05)
+        self.serialIDLE_flag = False
+        # rospy.logdebug()
+        output = chr(0x5a) + chr(12) + chr(0x01) + chr(0x01) + \
+            chr((int(self.trans_x*1000.0)>>8)&0xff) + chr(int(self.trans_x*1000.0)&0xff) + \
+            chr(0x00) + chr(0x00) + \
+            chr((int(self.rotat_z*1000.0)>>8)&0xff) + chr(int(self.rotat_z*1000.0)&0xff) + \
+            chr(0x00) + chr(0x00)
+        int(self.trans_x*1000.0)>>8
+        self.serial.write(output)
+        rospy.loginfo("Send Vel Cmd")
+        # self.serial.read_all()
+        self.serialIDLE_flag = True
+        
     
     def timerOdomCB(self,event):
         #Serial read & write
@@ -67,28 +91,28 @@ class BaseControl:
             time.sleep(0.05)
         self.serialIDLE_flag = False
         self.serial.write(output)
-        while True:
-            data = self.serial.read_all()
-            if data == '':
-                continue
+        self.serialIDLE_flag = True   
+        try:
+            data = self.data
+            #Normal mode
+            if(len(data) == int(data[1].encode('hex'),16)):
+                print len(data)
+                rospy.loginfo("Valid Data")
+                # Vx = float(int(int(data[4].encode('hex'),16)<<8 + int(data[5].encode('hex'),16),16))
+                # Vx =int( (int(data[4].encode('hex'),8)<<8 + int(data[5].encode('hex'),16))&0xffff,16)
+                Vx = int(data[4].encode('hex'),8)*256
+                Vx += int(data[5].encode('hex'),16)
+                
+                
             else:
-                break
-        self.serialIDLE_flag = True
-        # self.serial.read(12)
-        # try:
-        # data = self.data
-        #Normal mode
-        if(len(data) == int(data[1].encode('hex'),16)):
-            rospy.loginfo("Valid Data")
-        else:
-            rospy.logerr("Invalid Data")
-        self.current_time = rospy.Time.now()
-        dt = (self.previous_time - self.current_time).to_sec
-        self.previous_time = self.current_time
-        # except:
-        #     rospy.logerr("Try Faild")
-        #     print data + str(len(data))
-        #     pass
+                rospy.logerr("Invalid Data")
+            self.current_time = rospy.Time.now()
+            dt = (self.previous_time - self.current_time).to_sec
+            self.previous_time = self.current_time
+        except :
+            # rospy.logerr("Try Faild")
+            # print data + str(len(data))
+            pass
         
     def timerCmdCB(self,event):
         #Send Velocity to move base
@@ -97,6 +121,7 @@ class BaseControl:
             rospy.loginfo("CmdCB Serial Busy")
             time.sleep(0.05)
         self.serialIDLE_flag = False
+        # rospy.logdebug()
         output = chr(0x5a) + chr(12) + chr(0x01) + chr(0x01) + chr(0x00) + chr(0x00) + chr(0x00) + chr(0x00) + chr(0x00) + chr(0x00) + chr(0x00) + chr(0x00)
         self.serial.write(output)
         rospy.loginfo("Send Vel Cmd")
