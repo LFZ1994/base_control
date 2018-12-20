@@ -35,6 +35,11 @@ class BaseControl:
         self.trans_x = 0.0
         self.rotat_z = 0.0
         self.sendcounter = 0
+        self.ImuErrFlag = False
+        self.EncoderFlag = False
+        self.BatteryFlag = False
+        self.OdomTimeCounter = 0
+        self.BatteryTimeCounter = 0
         # Serial Communication
         try:
             self.serial = serial.Serial(self.device_port,self.baudrate,timeout=10)
@@ -57,7 +62,7 @@ class BaseControl:
 
         self.timer_odom = rospy.Timer(rospy.Duration(1.0/self.odom_freq),self.timerOdomCB)
         self.timer_battery = rospy.Timer(rospy.Duration(1.0/self.battery_freq),self.timerBatteryCB)  #20Hz
-        # self.timer_cmd = rospy.Timer(rospy.Duration(2.0/self.odom_freq),self.timerCmdCB)
+        self.timer_cmd = rospy.Timer(rospy.Duration(2.0/self.odom_freq),self.timerCmdCB)
         self.tf_broadcaster = tf.TransformBroadcaster()
         self.serialQ = Queue.Queue(20)
         if(self.serial.in_waiting):
@@ -99,10 +104,15 @@ class BaseControl:
         except:
             rospy.logerr("Odom Command Send Faild")
         self.serialIDLE_flag = 0   
-
+        self.OdomTimeCounter = rospy.Time.now()
         while True:
             try:
-                data = self.serialQ.get(timeout=10)
+                try:
+                    while self.serialQ.empty():
+                        pass
+                    data = self.serialQ.get(timeout=10)
+                except:
+                    rospy.logerr("Encoder Get Q Faild --1")
                 if(len(data)==12):
                     if(int(data[3].encode('hex'),16) == 0x04):
                         break
@@ -124,10 +134,16 @@ class BaseControl:
                         self.serialQ.put(data)
                 else:
                     self.serialQ.put(data)
-                    rospy.logerr("Not Encoder Msg Len %d"%len(data))
+                    if self.EncoderFlag == False:
+                        rospy.logerr("Not Encoder Msg Len %d"%len(data))
+                        self.EncoderFlag == True
             except:
                 rospy.logerr("Encoder Get Q Faild")
                 break
+            if (rospy.Time.now()-self.OdomTimeCounter).to_sec() > 0.1:
+                rospy.logerr("Encoder Timeout")
+                return
+        self.EncoderFlag == False
         #Normal mode
         if(int(data[3].encode('hex'),16) == 0x04):
             Vx = int(data[4].encode('hex'),16)*256
@@ -150,12 +166,17 @@ class BaseControl:
         while self.serial.out_waiting:
             pass
         self.serial.write(output)
- 
-        # try:
+
         self.serialIDLE_flag = 0 
+        self.OdomTimeCounter = rospy.Time.now()
         while True:
             try:
-                data = self.serialQ.get(timeout=10)
+                try:
+                    while self.serialQ.empty():
+                        pass
+                    data = self.serialQ.get(timeout=10)
+                except:
+                    rospy.logerr("Imu Get Q Faild --1")
                 if(len(data)==12):
                     if(int(data[3].encode('hex'),16) == 0x06):
                         break
@@ -177,10 +198,16 @@ class BaseControl:
                         self.serialQ.put(data)
                 else:
                     self.serialQ.put(data)
-                    rospy.logerr("Not Imu Msg Length %d"%len(data))
+                    if self.ImuErrFlag == False:
+                        rospy.logerr("Not Imu Msg Length %d"%len(data))
+                        self.ImuErrFlag = True
             except:
                 rospy.logerr("Imu Get Q Faild")
                 break
+            if (rospy.Time.now()-self.OdomTimeCounter).to_sec() > 0.1:
+                rospy.logerr("Imu Timeout")
+                return
+        self.ImuErrFlag = False
         #Normal mode
         if(int(data[3].encode('hex'),16) == 0x06):
             Yawz = int(data[8].encode('hex'),16)*256
@@ -224,13 +251,8 @@ class BaseControl:
         self.tf_broadcaster.sendTransform((self.pose_x,self.pose_y,0.0),pose_quat,self.current_time,self.baseId,self.odomId)
     #Battery Timer callback function to get battery info
     def timerBatteryCB(self,event):
-        #Send Velocity to move base
-        # while self.serialIDLE_flag==False:
-        #     # time.sleep(1)
-        
         output = chr(0x5a) + chr(0x06) + chr(0x01) + chr(0x07) + chr(0x00) + chr(0x00)
         while(self.serialIDLE_flag):
-            # rospy.loginfo("BatteryCB Serial Busy %d"%self.serialIDLE_flag)
             time.sleep(0.01)
         self.serialIDLE_flag = 3
         try:
@@ -240,15 +262,17 @@ class BaseControl:
         except:
             rospy.logerr("Battery Command Send Faild")
         rospy.loginfo("Get Battery Info")
-        # try:
-        # data = self.data
 
         self.serialIDLE_flag = 0
+        self.BatteryTimeCounter = rospy.Time.now()
         while True:
             try:
+                while self.serialQ.empty():
+                    pass
                 data = self.serialQ.get(timeout=10)
                 if(len(data)==10):
                     if(int(data[3].encode('hex'),16) == 0x08):
+                        rospy.loginfo("Battery Get Q")
                         break
                     else:
                         self.serialQ.put(data)
@@ -268,11 +292,16 @@ class BaseControl:
                         self.serialQ.put(data)
                 else:
                     self.serialQ.put(data)
-                    rospy.logerr("Not Battery Msg Len %d"%len(data))
+                    if self.BatteryFlag == False:
+                        rospy.logerr("Not Battery Msg Len %d"%len(data))
+                        self.BatteryFlag = True
             except:
                 rospy.logerr("Battery Get Q Faild")
-                break
-        rospy.loginfo("Battery Get Q")
+                break  
+            if (rospy.Time.now()-self.BatteryTimeCounter).to_sec() > 0.1:
+                rospy.logerr("Battery Timeout")
+                return
+        self.BatteryFlag = False   
         #Normal mode
         if(int(data[3].encode('hex'),16) == 0x08):
             Vvoltage = int(data[4].encode('hex'),16)*256
