@@ -62,7 +62,7 @@ class BaseControl:
         self.odomId = rospy.get_param('~odom_id','odom')
         self.device_port = rospy.get_param('~port','/dev/ttyUSB0')
         self.baudrate = int(rospy.get_param('~baudrate','115200'))
-        self.odom_freq = int(rospy.get_param('~odom_freq','50'))
+        self.odom_freq = int(rospy.get_param('~odom_freq','25'))
         self.odom_topic = rospy.get_param('~odom_topic','/odom')
         self.battery_topic = rospy.get_param('~battery_topic','battery')
         self.battery_freq = float(rospy.get_param('~battery_freq','0.1'))
