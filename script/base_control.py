@@ -1,5 +1,6 @@
 #!/usr/bin/python
 # coding=gbk
+import os
 import rospy
 import tf
 import time
@@ -10,6 +11,11 @@ import string
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState
+base_type = os.getenv('BASE_TYPE')
+if(base_type == 'ackerman'):
+    from ackermann_msgs.msg import AckermannDriveStamped
+
+print(base_type)
 
 import Queue
 import ctypes
@@ -62,10 +68,10 @@ class BaseControl:
         self.odomId = rospy.get_param('~odom_id','odom')
         self.device_port = rospy.get_param('~port','/dev/ttyUSB0')
         self.baudrate = int(rospy.get_param('~baudrate','115200'))
-        self.odom_freq = int(rospy.get_param('~odom_freq','25'))
+        self.odom_freq = int(rospy.get_param('~odom_freq','50'))
         self.odom_topic = rospy.get_param('~odom_topic','/odom')
         self.battery_topic = rospy.get_param('~battery_topic','battery')
-        self.battery_freq = float(rospy.get_param('~battery_freq','0.1'))
+        self.battery_freq = float(rospy.get_param('~battery_freq','1'))
         #define param
         self.current_time = rospy.Time.now()
         self.previous_time = self.current_time
@@ -75,6 +81,8 @@ class BaseControl:
         self.serialIDLE_flag = 0
         self.trans_x = 0.0
         self.rotat_z = 0.0
+        self.speed = 0.0
+        self.steering_angle = 0.0
         self.sendcounter = 0
         self.ImuErrFlag = False
         self.EncoderFlag = False
@@ -88,7 +96,7 @@ class BaseControl:
         self.Vvoltage = 0
         self.Icurrent = 0
         self.last_cmd_vel_time = rospy.Time.now()
-
+        self.last_ackermann_cmd_time = rospy.Time.now()
         # Serial Communication
         try:
             self.serial = serial.Serial(self.device_port,self.baudrate,timeout=10)
@@ -106,6 +114,8 @@ class BaseControl:
         rospy.loginfo("Serial Open Succeed")
 
         self.sub = rospy.Subscriber("cmd_vel",Twist,self.cmdCB,queue_size=20)
+        if(base_type == 'ackerman'):
+            self.sub = rospy.Subscriber("ackermann_cmd",AckermannDriveStamped,self.ackermannCmdCB,queue_size=20)
         self.pub = rospy.Publisher(self.odom_topic,Odometry,queue_size=10)
         self.baudrate_pub = rospy.Publisher(self.battery_topic,BatteryState,queue_size=3)
 
@@ -148,6 +158,34 @@ class BaseControl:
         outputdata[5] = int(self.trans_x*1000.0)&0xff
         outputdata[8] = (int(self.rotat_z*1000.0)>>8)&0xff
         outputdata[9] = int(self.rotat_z*1000.0)&0xff
+        crc_8 = self.crc_byte(outputdata,len(outputdata)-1)
+        output += chr(crc_8)
+        while self.serialIDLE_flag:
+            time.sleep(0.01)
+        self.serialIDLE_flag = 4
+        try:
+            while self.serial.out_waiting:
+                pass
+            self.serial.write(output)
+        except:
+            rospy.logerr("Vel Command Send Faild")
+        self.serialIDLE_flag = 0
+    #
+    #Subscribe ackermann Cmd call this to send vel cmd to move base
+    def ackermannCmdCB(self,data):
+        self.speed = data.drive.speed
+        self.steering_angle = data.drive.steering_angle
+        self.last_ackermann_cmd_time = rospy.Time.now()
+        output = chr(0x5a) + chr(12) + chr(0x01) + chr(0x01) + \
+            chr((int(self.speed*1000.0)>>8)&0xff) + chr(int(self.speed*1000.0)&0xff) + \
+            chr(0x00) + chr(0x00) + \
+            chr((int(self.steering_angle*1000.0)>>8)&0xff) + chr(int(self.steering_angle*1000.0)&0xff) + \
+            chr(0x00)
+        outputdata = [0x5a,0x0c,0x01,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00]
+        outputdata[4] = (int(self.speed*1000.0)>>8)&0xff
+        outputdata[5] = int(self.speed*1000.0)&0xff
+        outputdata[8] = (int(self.steering_angle*1000.0)>>8)&0xff
+        outputdata[9] = int(self.steering_angle*1000.0)&0xff
         crc_8 = self.crc_byte(outputdata,len(outputdata)-1)
         output += chr(crc_8)
         while self.serialIDLE_flag:
