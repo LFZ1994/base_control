@@ -11,14 +11,12 @@ import string
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState
+import Queue
+import ctypes
+
 base_type = os.getenv('BASE_TYPE')
 if(base_type == 'ackerman'):
     from ackermann_msgs.msg import AckermannDriveStamped
-
-print(base_type)
-
-import Queue
-import ctypes
 
 class queue:
     def __init__(self, capacity = 100):
@@ -396,7 +394,11 @@ class BaseControl:
 if __name__=="__main__":
     try:
         rospy.init_node('base_control',anonymous=True)
-        rospy.loginfo('Nano base control ...')
+        if base_type != None:
+            rospy.loginfo('%s base control ...'%base_type)
+        else:
+            rospy.loginfo('base control ...')
+            rospy.logwarn('PLEASE SET BASE_TYPE ENV')
         bc = BaseControl()
         rospy.spin()
     except KeyboardInterrupt:
