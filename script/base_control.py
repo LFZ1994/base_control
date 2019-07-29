@@ -11,15 +11,15 @@ import string
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState
-import Queue
+from sensor_msgs.msg import Imu
 import ctypes
 
 base_type = os.getenv('BASE_TYPE')
 if(base_type == 'ackerman'):
     from ackermann_msgs.msg import AckermannDriveStamped
-
+#class queue is design for uart receive data cache
 class queue:
-    def __init__(self, capacity = 100):
+    def __init__(self, capacity = 1024*4):
         self.capacity = capacity
         self.size = 0
         self.front = 0
@@ -58,7 +58,7 @@ class queue:
         for i in range(self.capacity):
             print self.array[i],
         print(' ')
-
+#class BaseControl:
 class BaseControl:
     def __init__(self):
         #Get params
@@ -70,6 +70,11 @@ class BaseControl:
         self.odom_topic = rospy.get_param('~odom_topic','/odom')
         self.battery_topic = rospy.get_param('~battery_topic','battery')
         self.battery_freq = float(rospy.get_param('~battery_freq','1'))
+        self.pub_imu = bool(rospy.get_param('~pub_imu','False'))
+        if(self.pub_imu == True):
+            self.imuId = rospy.get_param('~imu_id','imu')
+            self.imu_topic = rospy.get_param('~imu_topic','imu')
+            self.imu_freq = float(rospy.get_param('~imu_freq','50'))
         #define param
         self.current_time = rospy.Time.now()
         self.previous_time = self.current_time
@@ -78,6 +83,7 @@ class BaseControl:
         self.pose_yaw = 0.0
         self.serialIDLE_flag = 0
         self.trans_x = 0.0
+        self.trans_y = 0.0
         self.rotat_z = 0.0
         self.speed = 0.0
         self.steering_angle = 0.0
@@ -87,12 +93,18 @@ class BaseControl:
         self.BatteryFlag = False
         self.OdomTimeCounter = 0
         self.BatteryTimeCounter = 0
-        self.Circleloop = queue(capacity = 500)
-        self.Vx =0
+        self.Circleloop = queue(capacity = 1024*4)
+        self.Vx = 0
+        self.Vy = 0
         self.Vyaw = 0
         self.Yawz = 0
         self.Vvoltage = 0
         self.Icurrent = 0
+        self.Gyro = [0,0,0]
+        self.Accel = [0,0,0]
+        self.Quat = [0,0,0,0]
+        self.movebase_firmware_version = [0,0,0]
+        self.movebase_hardware_version = [0,0,0]
         self.last_cmd_vel_time = rospy.Time.now()
         self.last_ackermann_cmd_time = rospy.Time.now()
         # Serial Communication
@@ -110,20 +122,25 @@ class BaseControl:
             self.serial.close
             sys.exit(0)
         rospy.loginfo("Serial Open Succeed")
-
-        self.sub = rospy.Subscriber("cmd_vel",Twist,self.cmdCB,queue_size=20)
+        #if move base type is ackerman,sud ackerman topic,else sub cmd_vel topic
         if(base_type == 'ackerman'):
             self.sub = rospy.Subscriber("ackermann_cmd",AckermannDriveStamped,self.ackermannCmdCB,queue_size=20)
+        else:
+            self.sub = rospy.Subscriber("cmd_vel",Twist,self.cmdCB,queue_size=20)
         self.pub = rospy.Publisher(self.odom_topic,Odometry,queue_size=10)
-        self.baudrate_pub = rospy.Publisher(self.battery_topic,BatteryState,queue_size=3)
-
-        self.timer_odom = rospy.Timer(rospy.Duration(1.0/self.odom_freq),self.timerOdomCB)
-        self.timer_battery = rospy.Timer(rospy.Duration(1.0/self.battery_freq),self.timerBatteryCB)  #20Hz
-        # self.timer_cmd = rospy.Timer(rospy.Duration(1.0/self.odom_freq),self.timerCmdCB)
-        self.timer_communication = rospy.Timer(rospy.Duration(1.0/1000),self.timerCommunicationCB)
+        self.battery_pub = rospy.Publisher(self.battery_topic,BatteryState,queue_size=3)
         self.tf_broadcaster = tf.TransformBroadcaster()
-        self.serialQ = Queue.Queue(200)
-        # self.serial.flush()
+        self.timer_odom = rospy.Timer(rospy.Duration(1.0/self.odom_freq),self.timerOdomCB)
+        self.timer_battery = rospy.Timer(rospy.Duration(1.0/self.battery_freq),self.timerBatteryCB)  
+        self.timer_communication = rospy.Timer(rospy.Duration(5.0/1000),self.timerCommunicationCB)
+        #inorder to compatibility old version firmware,imu topic is NOT pud in default
+        if(self.pub_imu):
+            self.timer_imu = rospy.Timer(rospy.Duration(1.0/self.imu_freq),self.timerIMUCB) 
+            self.imu_pub = rospy.Publisher(self.imu_topic,Imu,queue_size=10)
+        self.getVersion()
+        #move base imu initialization need about 2s,during initialization,move base system is block
+        #so need this gap
+        time.sleep(3)
     #CRC-8 Calculate
     def crc_1byte(self,data):
         crc_1byte = 0
@@ -144,16 +161,19 @@ class BaseControl:
     #Subscribe vel_cmd call this to send vel cmd to move base
     def cmdCB(self,data):
         self.trans_x = data.linear.x
+        self.trans_y = data.linear.y
         self.rotat_z = data.angular.z
         self.last_cmd_vel_time = rospy.Time.now()
         output = chr(0x5a) + chr(12) + chr(0x01) + chr(0x01) + \
             chr((int(self.trans_x*1000.0)>>8)&0xff) + chr(int(self.trans_x*1000.0)&0xff) + \
-            chr(0x00) + chr(0x00) + \
+            chr((int(self.trans_y*1000.0)>>8)&0xff) + chr(int(self.trans_y*1000.0)&0xff) + \
             chr((int(self.rotat_z*1000.0)>>8)&0xff) + chr(int(self.rotat_z*1000.0)&0xff) + \
             chr(0x00)
         outputdata = [0x5a,0x0c,0x01,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00]
         outputdata[4] = (int(self.trans_x*1000.0)>>8)&0xff
         outputdata[5] = int(self.trans_x*1000.0)&0xff
+        outputdata[6] = (int(self.trans_y*1000.0)>>8)&0xff
+        outputdata[7] = int(self.trans_y*1000.0)&0xff
         outputdata[8] = (int(self.rotat_z*1000.0)>>8)&0xff
         outputdata[9] = int(self.rotat_z*1000.0)&0xff
         crc_8 = self.crc_byte(outputdata,len(outputdata)-1)
@@ -168,7 +188,6 @@ class BaseControl:
         except:
             rospy.logerr("Vel Command Send Faild")
         self.serialIDLE_flag = 0
-    #
     #Subscribe ackermann Cmd call this to send vel cmd to move base
     def ackermannCmdCB(self,data):
         self.speed = data.drive.speed
@@ -196,23 +215,18 @@ class BaseControl:
         except:
             rospy.logerr("Vel Command Send Faild")
         self.serialIDLE_flag = 0
-    #
+    #Communication Timer callback to handle receive data
     def timerCommunicationCB(self,event):
         length = self.serial.in_waiting
         if length:
             reading = self.serial.read_all()
             if len(reading)!=0:
-                # print "Recv Len:%d--"%len(reading),
                 for i in range(0,len(reading)):
                     data = (int(reading[i].encode('hex'),16)) 
-                    # print " %x"%data,
                     try:
                         self.Circleloop.enqueue(data)
                     except:
                         rospy.logerr("Circleloop.enqueue Faild")
-                # print ''
-                # self.Circleloop.show_queue()
-                # print self.Circleloop.front,self.Circleloop.rear
         else:
             pass
         if self.Circleloop.is_empty()==False:
@@ -235,24 +249,22 @@ class BaseControl:
                             print databuf
                             print "Crc check Err %d"%self.crc_byte(databuf,length-1)
                             pass
-                        # self.serialQ.put(databuf)
+                        #parse receive data
                         if(databuf[3] == 0x04):
                             self.Vx =    databuf[4]*256
                             self.Vx +=   databuf[5]
+                            self.Vy =    databuf[6]*256
+                            self.Vyaw +=   databuf[7]
                             self.Vyaw =  databuf[8]*256
                             self.Vyaw += databuf[9]
-                            print "Vx %x"%self.Vx
-                            print "Vyaw %x"%self.Vyaw
                         elif(databuf[3] == 0x06):
                             self.Yawz =  databuf[8]*256
                             self.Yawz += databuf[9]
-                            print "Yawz %x"%self.Yawz
                         elif (databuf[3] == 0x08):
                             self.Vvoltage = databuf[4]*256
                             self.Vvoltage += databuf[5]
                             self.Icurrent = databuf[6]*256
                             self.Icurrent += databuf[7]
-                            # print ctypes.c_int16(self.Vvoltage),ctypes.c_int16(self.Icurrent)
                         elif (databuf[3] == 0x0a):
                             self.Vx =    databuf[4]*256
                             self.Vx +=   databuf[5]
@@ -260,31 +272,77 @@ class BaseControl:
                             self.Yawz += databuf[7]
                             self.Vyaw =  databuf[8]*256
                             self.Vyaw += databuf[9]
-                            # print "Vx %x"%self.Vx
-                            # print "Yawz %x"%self.Yawz
-                            # print "Vyaw %x"%self.Vyaw
+                        elif (databuf[3] == 0x12):
+                            self.Vx =    databuf[4]*256
+                            self.Vx +=   databuf[5]
+                            self.Vy =  databuf[6]*256
+                            self.Vy += databuf[7]
+                            self.Yawz =  databuf[8]*256
+                            self.Yawz += databuf[9]    
+                            self.Vyaw =  databuf[10]*256
+                            self.Vyaw += databuf[11]                          
+                        elif (databuf[3] == 0x14):
+                            self.Gyro[0] = int(((databuf[4]&0xff)<<24)|((databuf[5]&0xff)<<16)|((databuf[6]&0xff)<<8)|(databuf[7]&0xff))
+                            self.Gyro[1] = int(((databuf[8]&0xff)<<24)|((databuf[9]&0xff)<<16)|((databuf[11]&0xff)<<8)|(databuf[12]&0xff))
+                            self.Gyro[2] = int(((databuf[12]&0xff)<<24)|((databuf[13]&0xff)<<16)|((databuf[14]&0xff)<<8)|(databuf[15]&0xff))
+
+                            self.Accel[0] = int(((databuf[16]&0xff)<<24)|((databuf[17]&0xff)<<16)|((databuf[18]&0xff)<<8)|(databuf[19]&0xff))
+                            self.Accel[1] = int(((databuf[20]&0xff)<<24)|((databuf[21]&0xff)<<16)|((databuf[22]&0xff)<<8)|(databuf[23]&0xff))
+                            self.Accel[2] = int(((databuf[24]&0xff)<<24)|((databuf[25]&0xff)<<16)|((databuf[26]&0xff)<<8)|(databuf[27]&0xff))
+
+                            self.Quat[0] = int((databuf[28]&0xff)<<8|databuf[29])
+                            self.Quat[1] = int((databuf[30]&0xff)<<8|databuf[31])
+                            self.Quat[2] = int((databuf[32]&0xff)<<8|databuf[33])
+                            self.Quat[3] = int((databuf[34]&0xff)<<8|databuf[35])
+                        elif(databuf[3] == 0xf2):
+                            self.movebase_hardware_version[0] = databuf[4]
+                            self.movebase_hardware_version[1] = databuf[5]
+                            self.movebase_hardware_version[2] = databuf[6]
+                            self.movebase_firmware_version[0] = databuf[7]
+                            self.movebase_firmware_version[1] = databuf[8]
+                            self.movebase_firmware_version[2] = databuf[9]
+                            version_string = "Move Base Hardware Ver %d.%d.%d,Firmware Ver %d.%d.%d"\
+                                %(self.movebase_hardware_version[0],self.movebase_hardware_version[1],self.movebase_hardware_version[2],\
+                                self.movebase_firmware_version[0],self.movebase_firmware_version[1],self.movebase_firmware_version[2])
+                            rospy.loginfo(version_string)
                         else:
                             self.timer_odom.shutdown()
                             self.timer_battery.shutdown()
-                            self.timer_cmd.shutdown()
+                            self.timer_imu.shutdown()
+                            self.timer_communication.shutdown()
                             rospy.logerr("Invalid Index")
                             rospy.logerr()
                             pass
                 else:
-                    print "CircleLoop Length %d"%length
-                    # self.Circleloop.dequeue()
+                    pass
             else:
-                print "Data:%x"%data
                 self.Circleloop.dequeue()
         else:
             # rospy.loginfo("Circle is Empty")
             pass
-    #                   
+    #get move base hardware & firmware version    
+    def getVersion(self):
+        #Get version info
+        output = chr(0x5a) + chr(0x06) + chr(0x01) + chr(0xf1) + chr(0x00) + chr(0xd7) #0xd7 is CRC-8 value
+        while(self.serialIDLE_flag):
+            time.sleep(0.01)
+        self.serialIDLE_flag = 1
+        try:
+            while self.serial.out_waiting:
+                pass
+            self.serial.write(output)
+        except:
+            rospy.logerr("Get Version Command Send Faild")
+        self.serialIDLE_flag = 0 
     #Odom Timer call this to get velocity and imu info and convert to odom topic
     def timerOdomCB(self,event):
         #Get move base velocity data
-        # rospy.loginfo("Send Encoder Cmd")
-        output = chr(0x5a) + chr(0x06) + chr(0x01) + chr(0x09) + chr(0x00) + chr(0x38) #0x38 is CRC-8 value
+        if self.movebase_firmware_version == 0: 
+            #old version firmware have no version info and not support new command below
+            output = chr(0x5a) + chr(0x06) + chr(0x01) + chr(0x09) + chr(0x00) + chr(0x38) #0x38 is CRC-8 value
+        else:
+            #in firmware version new than v1.1.0,support this command      
+            output = chr(0x5a) + chr(0x06) + chr(0x01) + chr(0x11) + chr(0x00) + chr(0xa2) 
         while(self.serialIDLE_flag):
             time.sleep(0.01)
         self.serialIDLE_flag = 1
@@ -295,27 +353,19 @@ class BaseControl:
         except:
             rospy.logerr("Odom Command Send Faild")
         self.serialIDLE_flag = 0   
-        # rospy.loginfo("Send Imu Cmd")
-        # output = chr(0x5a) + chr(0x06) + chr(0x01) + chr(0x05) + chr(0x00) + chr(0x00)
-        # while(self.serialIDLE_flag):
-        #     time.sleep(0.01)
-        # self.serialIDLE_flag = 2
-        # while self.serial.out_waiting:
-        #     pass
-        # self.serial.write(output)
-        # self.serialIDLE_flag = 0 
         #calculate odom data
         Vx = float(ctypes.c_int16(self.Vx).value/1000.0)
+        Vy = float(ctypes.c_int16(self.Vy).value/1000.0)
         Vyaw = float(ctypes.c_int16(self.Vyaw).value/1000.0)
-        # print "Yawz------------ %d"%ctypes.c_int16(self.Yawz).value
+
         self.pose_yaw = float(ctypes.c_int16(self.Yawz).value/100.0)
         self.pose_yaw = self.pose_yaw*math.pi/180.0
-        # print "pose_yaw------------ %f"%pose_yaw
+  
         self.current_time = rospy.Time.now()
         dt = (self.current_time - self.previous_time).to_sec()
         self.previous_time = self.current_time
-        self.pose_x = self.pose_x + Vx * (math.cos(self.pose_yaw))*dt
-        self.pose_y = self.pose_y + Vx * (math.sin(self.pose_yaw))*dt
+        self.pose_x = self.pose_x + Vx * (math.cos(self.pose_yaw))*dt + Vy * (math.sin(self.pose_yaw))*dt
+        self.pose_y = self.pose_y + Vx * (math.sin(self.pose_yaw))*dt + Vy * (math.cos(self.pose_yaw))*dt
 
         pose_quat = tf.transformations.quaternion_from_euler(0,0,self.pose_yaw)        
         msg = Odometry()
@@ -330,10 +380,10 @@ class BaseControl:
         msg.pose.pose.orientation.z = pose_quat[2]
         msg.pose.pose.orientation.w = pose_quat[3]
         msg.twist.twist.linear.x = Vx
+        msg.twist.twist.linear.y = Vy
         msg.twist.twist.angular.z = Vyaw
         self.pub.publish(msg)
         self.tf_broadcaster.sendTransform((self.pose_x,self.pose_y,0.0),pose_quat,self.current_time,self.baseId,self.odomId)
-    #
     #Battery Timer callback function to get battery info
     def timerBatteryCB(self,event):
         output = chr(0x5a) + chr(0x06) + chr(0x01) + chr(0x07) + chr(0x00) + chr(0xe4) #0xe4 is CRC-8 value
@@ -346,51 +396,49 @@ class BaseControl:
             self.serial.write(output)
         except:
             rospy.logerr("Battery Command Send Faild")
-        # rospy.loginfo("Get Battery Info")
-
         self.serialIDLE_flag = 0
         msg = BatteryState()
         msg.header.stamp = self.current_time
         msg.header.frame_id = self.baseId
         msg.voltage = float(self.Vvoltage/1000.0)
         msg.current = float(self.Icurrent/1000.0)
-        self.baudrate_pub.publish(msg)
-    #timerCmdCB callback function TODO:delete
-    def timerCmdCB(self,ecent):
-        if(rospy.Time.now()-self.last_cmd_vel_time).to_sec > 0.2:
-            self.trans_x = 0
-            self.rotat_z = 0
-        else:
-            pass
-        trans_x = self.trans_x
-        rotat_z = self.rotat_z
-        output = chr(0x5a) + chr(12) + chr(0x01) + chr(0x01) + \
-            chr((int(trans_x*1000.0)>>8)&0xff) + chr(int(trans_x*1000.0)&0xff) + \
-            chr(0x00) + chr(0x00) + \
-            chr((int(rotat_z*1000.0)>>8)&0xff) + chr(int(rotat_z*1000.0)&0xff) + \
-            chr(0x00)
-        outputdata = [0x5a,0x0c,0x01,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00]
-        outputdata[4] = (int(trans_x*1000.0)>>8)&0xff
-        outputdata[5] = int(trans_x*1000.0)&0xff
-        outputdata[8] = (int(rotat_z*1000.0)>>8)&0xff
-        outputdata[9] = int(rotat_z*1000.0)&0xff
-        crc_8 = self.crc_byte(outputdata,len(outputdata)-1)
-        # print "CRC-8 = %02x"%crc_8
-        output += chr(crc_8)
-        while self.serialIDLE_flag:
-            # time.sleep(1)
-            # rospy.loginfo("CmdCB Serial Busy %d"%self.serialIDLE_flag)
+        self.battery_pub.publish(msg)
+    #IMU Timer callback function to get raw imu info
+    def timerIMUCB(self,event):
+        output = chr(0x5a) + chr(0x06) + chr(0x01) + chr(0x13) + chr(0x00) + chr(0x33) #0x33 is CRC-8 value
+        while(self.serialIDLE_flag):
             time.sleep(0.01)
-        self.serialIDLE_flag = 4
+        self.serialIDLE_flag = 3
         try:
             while self.serial.out_waiting:
                 pass
             self.serial.write(output)
         except:
-            rospy.logerr("Vel Command Send Faild")
-        self.serialIDLE_flag = 0
-        # rospy.loginfo("Send Vel Cmd")
+            rospy.logerr("Imu Command Send Faild")
 
+        self.serialIDLE_flag = 0
+        msg = Imu()
+        msg.header.stamp = self.current_time
+        msg.header.frame_id = self.imuId
+
+        msg.angular_velocity.x = float(ctypes.c_int32(self.Gyro[0]).value/100000.0)
+        msg.angular_velocity.y = float(ctypes.c_int32(self.Gyro[1]).value/100000.0)
+        msg.angular_velocity.z = float(ctypes.c_int32(self.Gyro[2]).value/100000.0)
+
+        msg.linear_acceleration.x = float(ctypes.c_int32(self.Accel[0]).value/100000.0)
+        msg.linear_acceleration.y = float(ctypes.c_int32(self.Accel[1]).value/100000.0)
+        msg.linear_acceleration.z = float(ctypes.c_int32(self.Accel[2]).value/100000.0)
+
+        msg.orientation.w = float(ctypes.c_int16(self.Quat[0]).value/10000.0)
+        msg.orientation.x = float(ctypes.c_int16(self.Quat[1]).value/10000.0)
+        msg.orientation.y = float(ctypes.c_int16(self.Quat[2]).value/10000.0)
+        msg.orientation.z = float(ctypes.c_int16(self.Quat[3]).value/10000.0)
+
+        self.imu_pub.publish(msg)  
+        self.tf_broadcaster.sendTransform((0.0,0.0,0.0),(0.0,0.0,0.0,1.0),self.current_time,self.imuId,self.baseId)      
+
+
+#main function
 if __name__=="__main__":
     try:
         rospy.init_node('base_control',anonymous=True)
@@ -399,6 +447,7 @@ if __name__=="__main__":
         else:
             rospy.loginfo('base control ...')
             rospy.logwarn('PLEASE SET BASE_TYPE ENV')
+
         bc = BaseControl()
         rospy.spin()
     except KeyboardInterrupt:
