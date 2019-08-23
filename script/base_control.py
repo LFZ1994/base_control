@@ -1,5 +1,19 @@
 #!/usr/bin/python
 # coding=gbk
+# Copyright 2019 Wechange Tech.
+# Developer: FuZhi, Liu (liu.fuzhi@wechangetech.com)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import os
 import rospy
 import tf
@@ -15,8 +29,7 @@ from sensor_msgs.msg import Imu
 import ctypes
 
 base_type = os.getenv('BASE_TYPE')
-if(base_type == 'ackerman'):
-    from ackermann_msgs.msg import AckermannDriveStamped
+
 #class queue is design for uart receive data cache
 class queue:
     def __init__(self, capacity = 1024*4):
@@ -70,11 +83,17 @@ class BaseControl:
         self.odom_topic = rospy.get_param('~odom_topic','/odom')
         self.battery_topic = rospy.get_param('~battery_topic','battery')
         self.battery_freq = float(rospy.get_param('~battery_freq','1'))
+        self.cmd_vel_topic= rospy.get_param('~cmd_vel_topic','/cmd_vel')
+        self.ackermann_cmd_topic = rospy.get_param('~ackermann_cmd_topic','/ackermann_cmd_topic')
+
         self.pub_imu = bool(rospy.get_param('~pub_imu','False'))
         if(self.pub_imu == True):
             self.imuId = rospy.get_param('~imu_id','imu')
             self.imu_topic = rospy.get_param('~imu_topic','imu')
             self.imu_freq = float(rospy.get_param('~imu_freq','50'))
+        self.sub_ackermann = bool(rospy.get_param('~sub_ackermann','False'))
+
+
         #define param
         self.current_time = rospy.Time.now()
         self.previous_time = self.current_time
@@ -122,11 +141,12 @@ class BaseControl:
             self.serial.close
             sys.exit(0)
         rospy.loginfo("Serial Open Succeed")
-        #if move base type is ackerman,sud ackerman topic,else sub cmd_vel topic
-        if(base_type == 'ackerman'):
-            self.sub = rospy.Subscriber("ackermann_cmd",AckermannDriveStamped,self.ackermannCmdCB,queue_size=20)
+        #if move base type is ackermann car like robot and use ackermann msg ,sud ackermann topic,else sub cmd_vel topic
+        if((base_type == 'NanoCar') & (self.sub_ackermann == True)):
+            from ackermann_msgs.msg import AckermannDriveStamped
+            self.sub = rospy.Subscriber(self.ackermann_cmd_topic,AckermannDriveStamped,self.ackermannCmdCB,queue_size=20)
         else:
-            self.sub = rospy.Subscriber("cmd_vel",Twist,self.cmdCB,queue_size=20)
+            self.sub = rospy.Subscriber(self.cmd_vel_topic,Twist,self.cmdCB,queue_size=20)
         self.pub = rospy.Publisher(self.odom_topic,Odometry,queue_size=10)
         self.battery_pub = rospy.Publisher(self.battery_topic,BatteryState,queue_size=3)
         self.tf_broadcaster = tf.TransformBroadcaster()
@@ -138,9 +158,9 @@ class BaseControl:
             self.timer_imu = rospy.Timer(rospy.Duration(1.0/self.imu_freq),self.timerIMUCB) 
             self.imu_pub = rospy.Publisher(self.imu_topic,Imu,queue_size=10)
         self.getVersion()
-        #move base imu initialization need about 2s,during initialization,move base system is block
+        #move base imu initialization need about 2s,during initialization,move base system is blocked
         #so need this gap
-        time.sleep(3)
+        time.sleep(2.2)
     #CRC-8 Calculate
     def crc_1byte(self,data):
         crc_1byte = 0
@@ -193,12 +213,12 @@ class BaseControl:
         self.speed = data.drive.speed
         self.steering_angle = data.drive.steering_angle
         self.last_ackermann_cmd_time = rospy.Time.now()
-        output = chr(0x5a) + chr(12) + chr(0x01) + chr(0x01) + \
+        output = chr(0x5a) + chr(12) + chr(0x01) + chr(0x15) + \
             chr((int(self.speed*1000.0)>>8)&0xff) + chr(int(self.speed*1000.0)&0xff) + \
             chr(0x00) + chr(0x00) + \
             chr((int(self.steering_angle*1000.0)>>8)&0xff) + chr(int(self.steering_angle*1000.0)&0xff) + \
             chr(0x00)
-        outputdata = [0x5a,0x0c,0x01,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00]
+        outputdata = [0x5a,0x0c,0x01,0x15,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00]
         outputdata[4] = (int(self.speed*1000.0)>>8)&0xff
         outputdata[5] = int(self.speed*1000.0)&0xff
         outputdata[8] = (int(self.steering_angle*1000.0)>>8)&0xff
@@ -216,6 +236,7 @@ class BaseControl:
             rospy.logerr("Vel Command Send Faild")
         self.serialIDLE_flag = 0
     #Communication Timer callback to handle receive data
+    #depend on communication protocol
     def timerCommunicationCB(self,event):
         length = self.serial.in_waiting
         if length:
@@ -246,8 +267,8 @@ class BaseControl:
                         if (databuf[length-1]) == self.crc_byte(databuf,length-1):
                             pass
                         else:
-                            print databuf
-                            print "Crc check Err %d"%self.crc_byte(databuf,length-1)
+                            # print databuf
+                            # print "Crc check Err %d"%self.crc_byte(databuf,length-1)
                             pass
                         #parse receive data
                         if(databuf[3] == 0x04):
@@ -283,7 +304,7 @@ class BaseControl:
                             self.Vyaw += databuf[11]                          
                         elif (databuf[3] == 0x14):
                             self.Gyro[0] = int(((databuf[4]&0xff)<<24)|((databuf[5]&0xff)<<16)|((databuf[6]&0xff)<<8)|(databuf[7]&0xff))
-                            self.Gyro[1] = int(((databuf[8]&0xff)<<24)|((databuf[9]&0xff)<<16)|((databuf[11]&0xff)<<8)|(databuf[12]&0xff))
+                            self.Gyro[1] = int(((databuf[8]&0xff)<<24)|((databuf[9]&0xff)<<16)|((databuf[10]&0xff)<<8)|(databuf[11]&0xff))
                             self.Gyro[2] = int(((databuf[12]&0xff)<<24)|((databuf[13]&0xff)<<16)|((databuf[14]&0xff)<<8)|(databuf[15]&0xff))
 
                             self.Accel[0] = int(((databuf[16]&0xff)<<24)|((databuf[17]&0xff)<<16)|((databuf[18]&0xff)<<8)|(databuf[19]&0xff))
@@ -435,8 +456,15 @@ class BaseControl:
         msg.orientation.z = float(ctypes.c_int16(self.Quat[3]).value/10000.0)
 
         self.imu_pub.publish(msg)  
-        self.tf_broadcaster.sendTransform((0.0,0.0,0.0),(0.0,0.0,0.0,1.0),self.current_time,self.imuId,self.baseId)      
-
+        # TF value calculate from mechanical structure
+        if(base_type == 'NanoRobot'):
+            self.tf_broadcaster.sendTransform((-0.062,0.0235,0.08),(0.0,0.0,0.0,1.0),self.current_time,self.imuId,self.baseId)   
+        elif(base_type == 'NanoCar'):
+            self.tf_broadcaster.sendTransform((-0.056,0.0285,0.09),(0.0,0.0,0.0,1.0),self.current_time,self.imuId,self.baseId) 
+        elif(base_type == '4WD'):
+            self.tf_broadcaster.sendTransform((-0.065,0.0167,0.02),(0.0,0.0,0.0,1.0),self.current_time,self.imuId,self.baseId)     
+        else:
+            pass
 
 #main function
 if __name__=="__main__":
