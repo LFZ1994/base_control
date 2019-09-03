@@ -385,7 +385,7 @@ class BaseControl:
         self.current_time = rospy.Time.now()
         dt = (self.current_time - self.previous_time).to_sec()
         self.previous_time = self.current_time
-        self.pose_x = self.pose_x + Vx * (math.cos(self.pose_yaw))*dt + Vy * (math.sin(self.pose_yaw))*dt
+        self.pose_x = self.pose_x + Vx * (math.cos(self.pose_yaw))*dt - Vy * (math.sin(self.pose_yaw))*dt
         self.pose_y = self.pose_y + Vx * (math.sin(self.pose_yaw))*dt + Vy * (math.cos(self.pose_yaw))*dt
 
         pose_quat = tf.transformations.quaternion_from_euler(0,0,self.pose_yaw)        
