@@ -275,7 +275,7 @@ class BaseControl:
                             self.Vx =    databuf[4]*256
                             self.Vx +=   databuf[5]
                             self.Vy =    databuf[6]*256
-                            self.Vyaw +=   databuf[7]
+                            self.Vy +=   databuf[7]
                             self.Vyaw =  databuf[8]*256
                             self.Vyaw += databuf[9]
                         elif(databuf[3] == 0x06):
