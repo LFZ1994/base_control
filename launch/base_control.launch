@@ -4,9 +4,9 @@
     <!-- support multi robot -->
     <arg name="robot_name" default=""/>   <!-- support multi robot -->
     <!-- robot frame -->
-    <arg name="base_frame"       default="/base_footprint" />    
-    <arg name="odom_frame"       default="/odom" />
-    <arg name="imu_frame"       default="/imu" /> 
+    <arg name="base_frame"       default="base_footprint" />    
+    <arg name="odom_frame"       default="odom" />
+    <arg name="imu_frame"       default="imu" /> 
     <!-- pub topic -->
     <arg name="odom_topic"       default="odom" /><!-- do NOT use '/' in topic name-->
     <arg name="imu_topic"       default="imu" />
@@ -47,9 +47,9 @@
                 <param name="baudrate"   value="115200"/>  
                 <param name="port"  value='/dev/move_base'/>
 
-                <param name="base_id"    value="$(arg robot_name)$(arg base_frame)"/> <!-- base_link name -->
-                <param name="odom_id"    value="$(arg robot_name)$(arg odom_frame)"/>      <!-- odom link name -->
-                <param name="imu_id"    value="$(arg robot_name)$(arg imu_frame)"/>      <!-- imu link name -->
+                <param name="base_id"    value="$(arg robot_name)/$(arg base_frame)"/> <!-- base_link name -->
+                <param name="odom_id"    value="$(arg robot_name)/$(arg odom_frame)"/>      <!-- odom link name -->
+                <param name="imu_id"    value="$(arg robot_name)/$(arg imu_frame)"/>      <!-- imu link name -->
 
                 <param name="odom_topic" value="$(arg odom_topic)"/> <!-- topic name -->
                 <param name="imu_topic" value="$(arg imu_topic)"/> <!-- topic name -->

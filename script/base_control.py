@@ -124,6 +124,8 @@ class BaseControl:
         self.Quat = [0,0,0,0]
         self.movebase_firmware_version = [0,0,0]
         self.movebase_hardware_version = [0,0,0]
+        self.movebase_type = ["NanoCar","NanoRobot","4WD_OMNI","4WD"]
+        self.motor_type = ["25GA370","37GB520"]
         self.last_cmd_vel_time = rospy.Time.now()
         self.last_ackermann_cmd_time = rospy.Time.now()
         # Serial Communication
@@ -161,6 +163,9 @@ class BaseControl:
         #move base imu initialization need about 2s,during initialization,move base system is blocked
         #so need this gap
         time.sleep(2.2)
+        self.getSN()
+        time.sleep(0.01)
+        self.getInfo()
     #CRC-8 Calculate
     def crc_1byte(self,data):
         crc_1byte = 0
@@ -326,6 +331,18 @@ class BaseControl:
                                 %(self.movebase_hardware_version[0],self.movebase_hardware_version[1],self.movebase_hardware_version[2],\
                                 self.movebase_firmware_version[0],self.movebase_firmware_version[1],self.movebase_firmware_version[2])
                             rospy.loginfo(version_string)
+                        elif(databuf[3] == 0xf4):
+                            sn_string = "SN:"
+                            for i in range(4,16):
+                                sn_string = "%s%02x"%(sn_string,databuf[i])
+                            rospy.loginfo(sn_string)                            
+
+                        elif(databuf[3] == 0x22):
+                            fRatio = float(databuf[6]<<8|databuf[7])/10
+                            fDiameter = float(databuf[8]<<8|databuf[9])/10
+                            info_string = "Type:%s Motor:%s Ratio:%.01f WheelDiameter:%.01f"\
+                                %(self.movebase_type[databuf[4]-1],self.motor_type[databuf[5]-1],fRatio,fDiameter)
+                            rospy.loginfo(info_string)
                         else:
                             self.timer_odom.shutdown()
                             self.timer_battery.shutdown()
@@ -355,6 +372,34 @@ class BaseControl:
         except:
             rospy.logerr("Get Version Command Send Faild")
         self.serialIDLE_flag = 0 
+    #get move base SN
+    def getSN(self):
+        #Get version info
+        output = chr(0x5a) + chr(0x06) + chr(0x01) + chr(0xf3) + chr(0x00) + chr(0x46) #0x46 is CRC-8 value
+        while(self.serialIDLE_flag):
+            time.sleep(0.01)
+        self.serialIDLE_flag = 1
+        try:
+            while self.serial.out_waiting:
+                pass
+            self.serial.write(output)
+        except:
+            rospy.logerr("Get SN Command Send Faild")
+        self.serialIDLE_flag = 0  
+    #get move base info
+    def getInfo(self):
+        #Get version info
+        output = chr(0x5a) + chr(0x06) + chr(0x01) + chr(0x21) + chr(0x00) + chr(0x8f) #0x8f is CRC-8 value
+        while(self.serialIDLE_flag):
+            time.sleep(0.01)
+        self.serialIDLE_flag = 1
+        try:
+            while self.serial.out_waiting:
+                pass
+            self.serial.write(output)
+        except:
+            rospy.logerr("Get info Command Send Faild")
+        self.serialIDLE_flag = 0               
     #Odom Timer call this to get velocity and imu info and convert to odom topic
     def timerOdomCB(self,event):
         #Get move base velocity data
