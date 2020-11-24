@@ -27,6 +27,7 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState
 from sensor_msgs.msg import Imu
 import ctypes
+from pushrod.msg import pushrod as Pushrod
 
 base_type = os.getenv('BASE_TYPE')
 
@@ -79,12 +80,13 @@ class BaseControl:
         self.odomId = rospy.get_param('~odom_id','odom')
         self.device_port = rospy.get_param('~port','/dev/ttyUSB0')
         self.baudrate = int(rospy.get_param('~baudrate','115200'))
-        self.odom_freq = int(rospy.get_param('~odom_freq','50'))
+        self.odom_freq = int(rospy.get_param('~odom_freq','1'))
         self.odom_topic = rospy.get_param('~odom_topic','/odom')
         self.battery_topic = rospy.get_param('~battery_topic','battery')
         self.battery_freq = float(rospy.get_param('~battery_freq','1'))
         self.cmd_vel_topic= rospy.get_param('~cmd_vel_topic','/cmd_vel')
         self.ackermann_cmd_topic = rospy.get_param('~ackermann_cmd_topic','/ackermann_cmd_topic')
+        
 
         self.pub_imu = bool(rospy.get_param('~pub_imu','False'))
         if(self.pub_imu == True):
@@ -126,6 +128,8 @@ class BaseControl:
         self.movebase_hardware_version = [0,0,0]
         self.movebase_type = ["NanoCar","NanoRobot","4WD_OMNI","4WD"]
         self.motor_type = ["25GA370","37GB520"]
+        self.pushrod_vel = [0,0,0,0]
+        self.pushrod_pos = [0,0,0,0]
         self.last_cmd_vel_time = rospy.Time.now()
         self.last_ackermann_cmd_time = rospy.Time.now()
         # Serial Communication
@@ -155,6 +159,9 @@ class BaseControl:
         self.timer_odom = rospy.Timer(rospy.Duration(1.0/self.odom_freq),self.timerOdomCB)
         self.timer_battery = rospy.Timer(rospy.Duration(1.0/self.battery_freq),self.timerBatteryCB)  
         self.timer_communication = rospy.Timer(rospy.Duration(5.0/1000),self.timerCommunicationCB)
+
+        self.pushrodsub = rospy.Subscriber("pushrod_cmd",Pushrod,self.pushrodCB,queue_size=3)
+
         #inorder to compatibility old version firmware,imu topic is NOT pud in default
         if(self.pub_imu):
             self.timer_imu = rospy.Timer(rospy.Duration(1.0/self.imu_freq),self.timerIMUCB) 
@@ -240,6 +247,53 @@ class BaseControl:
         except:
             rospy.logerr("Vel Command Send Faild")
         self.serialIDLE_flag = 0
+    # Subscribe ackermann Cmd call this to send vel cmd to move base
+    def pushrodCB(self,data):
+        self.pushrod_vel[0] = data.velocity[0]
+        self.pushrod_vel[1] = data.velocity[1]
+        self.pushrod_vel[2] = data.velocity[2]
+        self.pushrod_vel[3] = data.velocity[3]
+        self.pushrod_pos[0] = data.position[0]
+        self.pushrod_pos[1] = data.position[1]
+        self.pushrod_pos[2] = data.position[2]
+        self.pushrod_pos[3] = data.position[3]
+        output = chr(0x5a) + chr(0x12) + chr(0x01) + chr(0x35) + \
+            chr(int(self.pushrod_vel[0]&0xff)) + chr((int(self.pushrod_pos[0])>>8)&0xff) + chr((int(self.pushrod_pos[0]))&0xff) + \
+            chr(int(self.pushrod_vel[1]&0xff)) + chr((int(self.pushrod_pos[1])>>8)&0xff) + chr((int(self.pushrod_pos[1]))&0xff) + \
+            chr(int(self.pushrod_vel[2]&0xff)) + chr((int(self.pushrod_pos[2])>>8)&0xff) + chr((int(self.pushrod_pos[2]))&0xff) + \
+            chr(int(self.pushrod_vel[3]&0xff)) + chr((int(self.pushrod_pos[3])>>8)&0xff) + chr((int(self.pushrod_pos[3]))&0xff) + \
+            chr(0x00) + chr(0xff)
+        outputdata = [0x5a,0x12,0x01,0x35,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00]
+        outputdata[4] = int(self.pushrod_vel[0]&0xff)
+        outputdata[5] = (int(self.pushrod_pos[0])>>8)&0xff
+        outputdata[6] = (int(self.pushrod_pos[0]))&0xff
+
+        outputdata[7] = int(self.pushrod_vel[1]&0xff)
+        outputdata[8] = (int(self.pushrod_pos[1])>>8)&0xff
+        outputdata[9] = (int(self.pushrod_pos[1]))&0xff
+
+        outputdata[10] = int(self.pushrod_vel[2]&0xff)
+        outputdata[11] = (int(self.pushrod_pos[2])>>8)&0xff
+        outputdata[12] = (int(self.pushrod_pos[2]))&0xff
+
+        outputdata[13] = int(self.pushrod_vel[3]&0xff)
+        outputdata[14] = (int(self.pushrod_pos[3])>>8)&0xff
+        outputdata[15] = (int(self.pushrod_pos[3]))&0xff
+
+        crc_8 = self.crc_byte(outputdata,len(outputdata)-1)
+        output += chr(crc_8)
+
+        while self.serialIDLE_flag:
+            time.sleep(0.01)
+        self.serialIDLE_flag = 4
+        try:
+            while self.serial.out_waiting:
+                pass
+            self.serial.write(output)
+            rospy.loginfo("get  pushrod send")
+        except:
+            rospy.logerr("Vel Command Send Faild")
+        self.serialIDLE_flag = 0        
     #Communication Timer callback to handle receive data
     #depend on communication protocol
     def timerCommunicationCB(self,event):
@@ -343,6 +397,8 @@ class BaseControl:
                             info_string = "Type:%s Motor:%s Ratio:%.01f WheelDiameter:%.01f"\
                                 %(self.movebase_type[databuf[4]-1],self.motor_type[databuf[5]-1],fRatio,fDiameter)
                             rospy.loginfo(info_string)
+                        elif(databuf[3] == 0x36):
+                            rospy.loginfo("Get Pushrod")
                         else:
                             self.timer_odom.shutdown()
                             self.timer_battery.shutdown()
