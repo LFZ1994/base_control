@@ -26,9 +26,12 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState
 from sensor_msgs.msg import Imu
+from sensor_msgs.msg import Range
+
 import ctypes
 
 base_type = os.getenv('BASE_TYPE')
+sonar_num = int(os.getenv('SONAR_NUM')) 
 
 #class queue is design for uart receive data cache
 class queue:
@@ -91,6 +94,10 @@ class BaseControl:
             self.imuId = rospy.get_param('~imu_id','imu')
             self.imu_topic = rospy.get_param('~imu_topic','imu')
             self.imu_freq = float(rospy.get_param('~imu_freq','50'))
+            if self.imu_freq > 100:
+                self.imu_freq = 100
+
+        self.pub_sonar = bool(rospy.get_param('~pub_sonar','False'))
         self.sub_ackermann = bool(rospy.get_param('~sub_ackermann','False'))
 
 
@@ -122,6 +129,7 @@ class BaseControl:
         self.Gyro = [0,0,0]
         self.Accel = [0,0,0]
         self.Quat = [0,0,0,0]
+        self.Sonar = [0,0,0,0]
         self.movebase_firmware_version = [0,0,0]
         self.movebase_hardware_version = [0,0,0]
         self.movebase_type = ["NanoCar","NanoRobot","4WD_OMNI","4WD"]
@@ -151,10 +159,22 @@ class BaseControl:
             self.sub = rospy.Subscriber(self.cmd_vel_topic,Twist,self.cmdCB,queue_size=20)
         self.pub = rospy.Publisher(self.odom_topic,Odometry,queue_size=10)
         self.battery_pub = rospy.Publisher(self.battery_topic,BatteryState,queue_size=3)
+        if self.pub_sonar:
+            if sonar_num > 0:
+                self.timer_sonar = rospy.Timer(rospy.Duration(100.0/1000),self.timerSonarCB)
+                self.range_pub1 = rospy.Publisher('sonar_1',Range,queue_size=3)
+            if sonar_num > 1:    
+                self.range_pub2 = rospy.Publisher('sonar_2',Range,queue_size=3)
+            if sonar_num > 2:
+                self.range_pub3 = rospy.Publisher('sonar_3',Range,queue_size=3)
+            if sonar_num > 3:
+                self.range_pub4 = rospy.Publisher('sonar_4',Range,queue_size=3)
+
         self.tf_broadcaster = tf.TransformBroadcaster()
         self.timer_odom = rospy.Timer(rospy.Duration(1.0/self.odom_freq),self.timerOdomCB)
         self.timer_battery = rospy.Timer(rospy.Duration(1.0/self.battery_freq),self.timerBatteryCB)  
-        self.timer_communication = rospy.Timer(rospy.Duration(5.0/1000),self.timerCommunicationCB)
+        self.timer_communication = rospy.Timer(rospy.Duration(1.0/500),self.timerCommunicationCB)
+
         #inorder to compatibility old version firmware,imu topic is NOT pud in default
         if(self.pub_imu):
             self.timer_imu = rospy.Timer(rospy.Duration(1.0/self.imu_freq),self.timerIMUCB) 
@@ -252,14 +272,15 @@ class BaseControl:
                     try:
                         self.Circleloop.enqueue(data)
                     except:
-                        rospy.logerr("Circleloop.enqueue Faild")
+                        # self.Circleloop.show_queue()
+                        # print self.Circleloop.get_queue_length()
+                        # print data
+                        # rospy.logerr("Circleloop.enqueue Faild")
+                        pass
         else:
             pass
         if self.Circleloop.is_empty()==False:
-            if self.Circleloop.is_empty()==False:
-                data = self.Circleloop.get_front()
-            else:
-                pass
+            data = self.Circleloop.get_front()
             if data == 0x5a:
                 length = self.Circleloop.get_front_second()
                 if length > 1 :
@@ -320,6 +341,11 @@ class BaseControl:
                             self.Quat[1] = int((databuf[30]&0xff)<<8|databuf[31])
                             self.Quat[2] = int((databuf[32]&0xff)<<8|databuf[33])
                             self.Quat[3] = int((databuf[34]&0xff)<<8|databuf[35])
+                        elif (databuf[3] == 0x1a):
+                            self.Sonar[0] = databuf[4]
+                            self.Sonar[1] = databuf[5]
+                            self.Sonar[2] = databuf[6]
+                            self.Sonar[3] = databuf[7]    
                         elif(databuf[3] == 0xf2):
                             self.movebase_hardware_version[0] = databuf[4]
                             self.movebase_hardware_version[1] = databuf[5]
@@ -344,12 +370,11 @@ class BaseControl:
                                 %(self.movebase_type[databuf[4]-1],self.motor_type[databuf[5]-1],fRatio,fDiameter)
                             rospy.loginfo(info_string)
                         else:
-                            self.timer_odom.shutdown()
-                            self.timer_battery.shutdown()
-                            self.timer_imu.shutdown()
-                            self.timer_communication.shutdown()
-                            rospy.logerr("Invalid Index")
-                            rospy.logerr()
+                            # self.timer_odom.shutdown()
+                            # self.timer_battery.shutdown()
+                            # self.timer_imu.shutdown()
+                            # self.timer_communication.shutdown()
+                            # rospy.logerr("Invalid Index %d",databuf[3])
                             pass
                 else:
                     pass
@@ -469,6 +494,77 @@ class BaseControl:
         msg.voltage = float(self.Vvoltage/1000.0)
         msg.current = float(self.Icurrent/1000.0)
         self.battery_pub.publish(msg)
+    #Sonar Timer callback function to get battery info
+    def timerSonarCB(self,event):
+        output = chr(0x5a) + chr(0x06) + chr(0x01) + chr(0x19) + chr(0x00) + chr(0xff) #0xff is CRC-8 value
+        while(self.serialIDLE_flag):
+            time.sleep(0.01)
+        self.serialIDLE_flag = 3
+        try:
+            while self.serial.out_waiting:
+                pass
+            self.serial.write(output)
+        except:
+            rospy.logerr("Sonar Command Send Faild")
+        self.serialIDLE_flag = 0
+        msg = Range()
+        msg.header.stamp = self.current_time
+        msg.field_of_view = 0.26 #about 15 degree
+        msg.max_range = 2.5
+        msg.min_range = 0.01
+        # Sonar 1
+        msg.header.frame_id = 'Sonar_1'
+        if self.Sonar[0] == 0xff:
+            msg.range = float('inf') 
+        else:
+            msg.range = self.Sonar[0] / 100.0
+        self.range_pub1.publish(msg)
+         
+        # TF value calculate from mechanical structure
+        if('NanoRobot' in base_type ):
+            self.tf_broadcaster.sendTransform((0.0, 0.0, 0.0 ),(0.0, 0.0, 0.0, 1.0),self.current_time,'Sonar_1',self.baseId)
+        elif('NanoCar' in base_type):
+            self.tf_broadcaster.sendTransform((0.18, 0.0, 0.0 ),(0.0, 0.0, 0.0, 1.0),self.current_time,'Sonar_1',self.baseId)
+        elif('4WD' in base_type):
+            self.tf_broadcaster.sendTransform((0.0, 0.0, 0.0 ),(0.0, 0.0, 0.0, 1.0),self.current_time,'Sonar_1',self.baseId)
+        else:
+            pass
+
+        # Sonar 2
+        if sonar_num > 1:   
+            if self.Sonar[1] == 0xff:
+                msg.range = float('inf') 
+            else:
+                msg.range = self.Sonar[1] / 100.0
+            msg.header.frame_id = 'Sonar_2'
+            self.range_pub2.publish(msg)
+            
+            if('NanoRobot' in base_type):
+                self.tf_broadcaster.sendTransform((0.0, 0.0 ,0.0 ),(0.0,0.0,-1.0,0),self.current_time,'Sonar_2',self.baseId) 
+            elif('NanoCar' in base_type):
+                self.tf_broadcaster.sendTransform((-0.035, 0.0 ,0.0 ),(0.0,0.0,-1.0,0),self.current_time,'Sonar_2',self.baseId) 
+            elif('4WD' in base_type):
+                self.tf_broadcaster.sendTransform((0.0, 0.0 ,0.0 ),(0.0,0.0,-1.0,0),self.current_time,'Sonar_2',self.baseId) 
+            else:
+                pass
+        if sonar_num > 2:   
+        # Sonar 3
+            msg.header.frame_id = 'Sonar_3'
+            if self.Sonar[2] == 0xff:
+                msg.range = float('inf') 
+            else:
+                msg.range = self.Sonar[2] / 100.0
+            self.range_pub3.publish(msg)
+            self.tf_broadcaster.sendTransform((0.0, 0.0 ,0.0 ),(0.0,0.0,0.707,0.707),self.current_time,'Sonar_3',self.baseId) 
+        if sonar_num > 3:   
+        # Sonar 4
+            if self.Sonar[3] == 0xff:
+                msg.range = float('inf') 
+            else:
+                msg.range = self.Sonar[3] / 100.0
+            msg.header.frame_id = 'Sonar_4'
+            self.range_pub4.publish(msg)
+            self.tf_broadcaster.sendTransform((0.0, 0.0 ,0.0 ),(0.0,0.0,-0.707,0.707),self.current_time,'Sonar_4',self.baseId) 
     #IMU Timer callback function to get raw imu info
     def timerIMUCB(self,event):
         output = chr(0x5a) + chr(0x06) + chr(0x01) + chr(0x13) + chr(0x00) + chr(0x33) #0x33 is CRC-8 value
@@ -502,11 +598,11 @@ class BaseControl:
 
         self.imu_pub.publish(msg)  
         # TF value calculate from mechanical structure
-        if(base_type == 'NanoRobot'):
+        if('NanoRobot' in base_type):
             self.tf_broadcaster.sendTransform((-0.062,0.0235,0.08),(0.0,0.0,0.0,1.0),self.current_time,self.imuId,self.baseId)   
-        elif(base_type == 'NanoCar'):
-            self.tf_broadcaster.sendTransform((-0.056,0.0285,0.09),(0.0,0.0,0.0,1.0),self.current_time,self.imuId,self.baseId) 
-        elif(base_type == '4WD'):
+        elif('NanoCar' in base_type):
+            self.tf_broadcaster.sendTransform((0.0,0.0,0.09),(0.0,0.0,0.0,1.0),self.current_time,self.imuId,self.baseId) 
+        elif('4WD' in base_type):
             self.tf_broadcaster.sendTransform((-0.065,0.0167,0.02),(0.0,0.0,0.0,1.0),self.current_time,self.imuId,self.baseId)     
         else:
             pass

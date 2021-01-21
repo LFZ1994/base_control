@@ -17,6 +17,7 @@
     <!-- config param -->
     <arg name="pub_imu"       default="False" />
     <arg name="sub_ackermann"       default="False" />
+    <arg name="pub_sonar"       default="False" />
     <!-- base control node -->
 
     <!--ros namespace name can NOT be empty,so need evaluate use multi robot or not-->
@@ -37,6 +38,8 @@
             <param name="ackermann_cmd_topic" value="$(arg ackermann_cmd_topic)"/> <!-- topic name -->
 
             <param name="pub_imu" value="$(arg pub_imu)"/> <!-- pub imu topic or not -->
+            <param name="pub_sonar" value="$(arg pub_sonar)"/> <!-- pub sonar topic or not -->
+            
             <param name="sub_ackermann" value="$(arg sub_ackermann)"/> <!-- sub ackermann topic or not -->
         </node>
     </group>-->
@@ -59,6 +62,7 @@
                 <param name="ackermann_cmd_topic" value="$(arg robot_name)$(arg ackermann_cmd_topic)"/> <!-- topic name -->
 
                 <param name="pub_imu" value="$(arg pub_imu)"/> <!-- pub imu topic or not -->
+                <param name="pub_sonar" value="$(arg pub_sonar)"/> <!-- pub sonar topic or not -->
                 <param name="sub_ackermann" value="$(arg sub_ackermann)"/> <!-- sub ackermann topic or not -->
             </node>
         </group>
