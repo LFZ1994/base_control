@@ -152,7 +152,7 @@ class BaseControl:
             sys.exit(0)
         rospy.loginfo("Serial Open Succeed")
         #if move base type is ackermann car like robot and use ackermann msg ,sud ackermann topic,else sub cmd_vel topic
-        if((base_type == 'NanoCar') & (self.sub_ackermann == True)):
+        if(('NanoCar' in base_type) & (self.sub_ackermann == True)):
             from ackermann_msgs.msg import AckermannDriveStamped
             self.sub = rospy.Subscriber(self.ackermann_cmd_topic,AckermannDriveStamped,self.ackermannCmdCB,queue_size=20)
         else:
